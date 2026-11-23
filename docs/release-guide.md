@@ -24,5 +24,5 @@ Actions 탭에서 Release 워크플로가 끝나면 Releases 페이지에 APK가
 환경변수가 하나라도 없으면 서명 없이 빌드된다.
 
 ## 키스토어 백업
-키스토어와 비밀번호는 repo 밖(`~/.android-keys/`)에 있다. 이 키를 잃어버리면 같은 키로 서명한 업데이트를 낼 수 없으므로
+키스토어와 비밀번호는 repo 밖(`~/keys/`)에 있다. 이 키를 잃어버리면 같은 키로 서명한 업데이트를 낼 수 없으므로
 `vpn-practice-release.jks`와 `vpn-practice-release.properties`를 비밀번호 관리자 등 안전한 곳에 따로 백업해 둔다.
