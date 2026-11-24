@@ -24,7 +24,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
 
       - name: Build and test
-        run: ./gradlew assembleDebug testDebugUnitTest lintDebug
+        run: ./gradlew assembleDebug testDebugUnitTest lintDebug :server:test
 
       - name: Upload reports
         if: always()
