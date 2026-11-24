@@ -85,17 +85,17 @@
 - [ ] **Step 1: 매니페스트 수정.**
   - `<service android:name=".vpn.PracticeVpnService" android:permission="android.permission.BIND_VPN_SERVICE" android:foregroundServiceType="systemExempted" android:exported="false">` 와 `<intent-filter><action android:name="android.net.VpnService"/></intent-filter>`
   - 권한: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SYSTEM_EXEMPTED`, `POST_NOTIFICATIONS`
-  - **확인 필요**: `systemExempted`가 VpnService에 맞는 타입인지 Android 공식 문서(포그라운드 서비스 타입)로 확인한다. 다르면 문서에 맞는 타입으로 바꾸고 설계 문서의 "결정 사항"과 이 계획을 함께 고친다.
+  - `systemExempted` 확인 완료: Android 공식 문서(포그라운드 서비스 타입)가 VPN 앱을 허용 대상으로 명시한다. 다만 lint(`ForegroundServicePermission`)가 exact alarm 권한을 요구하는 오탐을 내므로 서비스에 `tools:ignore`로 억제하고 이유를 주석으로 남겼다.
 
 - [ ] **Step 2: `onStartCommand` 구현.** `ACTION_STOP`이면 `stopVpn()`, 그 외(`ACTION_START`)면 `startVpn()` 후 `START_NOT_STICKY` 반환. 이미 실행 중이면 `startVpn()`은 아무것도 하지 않는다.
 
 - [ ] **Step 3: `startVpn()` 구현.**
-  - 먼저 알림 채널을 만들고 `startForeground(...)`를 호출한다 (VPN 서비스는 사용자에게 계속 보여야 하고, 포그라운드 시작 제한 때문에 빨리 호출한다)
+  - 먼저 알림 채널을 만들고(minSdk 24라 `NotificationManagerCompat`/`NotificationChannelCompat` 사용, 플랫폼 API 직접 호출은 lint NewApi 에러) `startForeground(...)`를 호출한다 (VPN 서비스는 사용자에게 계속 보여야 하고, 포그라운드 시작 제한 때문에 빨리 호출한다)
   - `Builder().setSession("vpn-practice").addAddress("10.0.0.2", 24).addRoute("10.0.0.0", 24).setMtu(1500).establish()`로 fd를 얻는다. 라우트를 좁게 잡은 이유(인터넷을 끊지 않기 위해)를 주석으로 남긴다
   - `establish()`가 `null`(동의 철회 등)이면 서비스를 정리하고 종료
   - `serviceScope`(`CoroutineScope(SupervisorJob() + Dispatchers.IO)`)에서 읽기 루프를 launch하고 `isRunning`을 `true`로
 
-- [ ] **Step 4: 읽기 루프 구현.** `FileInputStream(fd.fileDescriptor)`에서 `ByteArray(32767)`로 `read()`를 반복한다. 읽은 길이가 0 이하면 건너뛰고, `Ipv4Packet.parse`가 null이면 `Log.d`로 "ignored"만 남기고, 아니면 `Log.i(TAG, "src=… dst=… proto=UDP port=9999")` 형태로 기록한다. `IOException`이면(fd가 닫힘) 루프를 정상 종료한다. `read()`는 블로킹이라 코루틴 취소로 깨어나지 않으므로 fd를 닫아야 깨어난다는 주석을 단다.
+- [ ] **Step 4: 읽기 루프 구현.** `FileInputStream(fd.fileDescriptor)`에서 `ByteArray(32767)`로 `read()`를 반복한다. 읽은 길이가 -1(스트림 끝)이면 루프를 끝내고 0이면 건너뛰고(0 이하를 모두 건너뛰면 EOF에서 busy loop), `Ipv4Packet.parse`가 null이면 `Log.d`로 "ignored"만 남기고, 아니면 `Log.i(TAG, "src=… dst=… proto=UDP port=9999")` 형태로 기록한다. `IOException`이면(fd가 닫힘) 루프를 정상 종료한다. `read()`는 블로킹이라 코루틴 취소로 깨어나지 않으므로 fd를 닫아야 깨어난다는 주석을 단다.
 
 - [ ] **Step 5: `stopVpn()` 구현.** 순서: `isRunning=false` -> `fd.close()`(읽기 루프가 `IOException`으로 빠져나옴) -> `job.cancel()` -> `stopForeground(STOP_FOREGROUND_REMOVE)` -> `stopSelf()`. fd와 job은 null 가능 필드로 두고, 두 번 호출돼도 안전하게 한다. `onDestroy()`와 `onRevoke()`는 `stopVpn()`을 호출한다 (`onRevoke()`가 오면 시스템이 이미 TUN을 회수한 상태라는 주석, `super.onRevoke()` 호출 포함).
 

@@ -67,7 +67,9 @@ class PracticeVpnService : VpnService() {
                 // stopVpn()이 fd를 닫아야 read()가 IOException으로 빠져나온다.
                 while (true) {
                     val length = input.read(buffer)
-                    if (length <= 0) continue
+                    // -1은 스트림 끝이다. continue만 하면 같은 read()를 무한 반복(busy loop)하므로 루프를 끝낸다.
+                    if (length < 0) break
+                    if (length == 0) continue
                     val packet = Ipv4Packet.parse(buffer, length)
                     if (packet == null) {
                         Log.d(TAG, "ignored non-IPv4 or malformed packet ($length bytes)")
