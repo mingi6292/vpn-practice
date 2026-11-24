@@ -25,4 +25,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "VpnPractice"
 include(":app")
+include(":server")
  
