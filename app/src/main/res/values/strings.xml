@@ -2,9 +2,12 @@
     <string name="app_name">VpnPractice</string>
     <string name="vpn_notification_channel">VPN 상태</string>
     <string name="vpn_notification_title">VPN 연습 실행 중</string>
-    <string name="status_running">실행 중</string>
+    <string name="status_running">실행 중 (정책: %1$s)</string>
     <string name="status_stopped">중지됨</string>
     <string name="action_start">시작</string>
     <string name="action_stop">중지</string>
     <string name="action_send_test_packet">테스트 패킷 보내기</string>
+    <string name="preset_all_apps">전체 앱</string>
+    <string name="preset_chrome_only">Chrome만</string>
+    <string name="preset_except_chrome">Chrome 빼고</string>
 </resources>

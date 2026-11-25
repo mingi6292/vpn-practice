@@ -2,8 +2,10 @@ package com.mg.vpnpractice.vpn
 
 import android.app.Notification
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationChannelCompat
@@ -35,24 +37,49 @@ class PracticeVpnService : VpnService() {
     private var tunnel: TunnelClient? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) stopVpn() else startVpn()
+        if (intent?.action == ACTION_STOP) {
+            stopVpn()
+        } else {
+            // extra가 없으면(시스템이 Intent 없이 다시 띄운 경우 등) 기본 프리셋으로 시작한다.
+            startVpn(PolicyPreset.fromName(intent?.getStringExtra(EXTRA_PRESET)))
+        }
         // 시스템이 서비스를 죽여도 자동 재시작하지 않는다. 재시작하려면 동의 상태를 다시 확인해야 한다.
         return START_NOT_STICKY
     }
 
-    private fun startVpn() {
-        if (tunFd != null) return // 이미 실행 중
+    private fun startVpn(preset: PolicyPreset) {
+        if (tunFd != null) return // 이미 실행 중. 정책을 바꾸려면 중지 후 다시 시작한다.
 
         // VPN 서비스는 사용자에게 계속 보여야 하고, 백그라운드 시작 제한을 피하려고 일찍 포그라운드로 올린다.
         startAsForeground()
 
-        val fd = Builder()
+        val policy = when (val result = preset.policy.resolve(::isInstalled)) {
+            is PolicyResult.Reject -> {
+                Log.w(TAG, "policy=${preset.name} rejected: ${result.reason}")
+                stopVpn()
+                return
+            }
+            is PolicyResult.Apply -> result
+        }
+        policy.skipped.forEach { Log.w(TAG, "app not installed, skipped: $it") }
+
+        val builder = Builder()
             .setSession("vpn-practice")
             .addAddress("10.0.0.2", 24)
-            // 가짜 사내 대역만 라우팅한다(split tunnel). 0.0.0.0/0으로 잡으면 폰의 일반 인터넷이 전부 끊긴다.
-            .addRoute("10.0.0.0", 24)
             .setMtu(1500)
-            .establish()
+        // 가짜 사내 대역만 라우팅한다(split tunnel). 0.0.0.0/0으로 잡으면 폰의 일반 인터넷이 전부 끊긴다.
+        policy.routes.forEach { builder.addRoute(it.address, it.prefixLength) }
+        // "Chrome만"에서는 우리 앱이 허용 목록 밖이라 터널 소켓이 TUN을 타지 않는다. 그래서 protect() 없이도 루프가 없다.
+        val apps = builder.applyAppRule(policy.apps)
+        if (apps is AppRule.Only && apps.packages.isEmpty()) {
+            // 허용 목록이 비면 Android는 전체 앱을 터널에 태운다. 정책과 반대가 되므로 시작하지 않는다.
+            Log.w(TAG, "policy=${preset.name} rejected: no allowed app could be applied")
+            stopVpn()
+            return
+        }
+
+        // 라우트와 앱 목록은 establish() 시점에 고정된다. 정책을 바꾸려면 중지 후 다시 시작해야 한다.
+        val fd = builder.establish()
         if (fd == null) {
             // 사용자가 동의를 철회했거나 다른 VPN이 우선권을 가진 경우
             Log.w(TAG, "establish() returned null")
@@ -61,7 +88,42 @@ class PracticeVpnService : VpnService() {
         }
         tunFd = fd
         tunnelJob = serviceScope.launch { runTunnel(fd) }
-        _isRunning.value = true
+        val routes = policy.routes.joinToString { "${it.address}/${it.prefixLength}" }
+        Log.i(TAG, "policy=${preset.name} routes=$routes apps=$apps")
+        _runningPreset.value = preset
+    }
+
+    /**
+     * 앱 목록을 Builder에 적용하고, 실제로 적용된 패키지만 담은 AppRule을 돌려준다.
+     * resolve()에서 설치를 확인했어도 그 사이에 앱이 지워질 수 있어서, 실패한 패키지만 건너뛴다.
+     */
+    private fun Builder.applyAppRule(rule: AppRule): AppRule = when (rule) {
+        AppRule.AllApps -> rule // 앱 목록을 설정하지 않으면 모든 앱이 대상이다
+        is AppRule.Only -> AppRule.Only(rule.packages.filter { pkg -> tryAddApp(pkg) { addAllowedApplication(pkg) } })
+        is AppRule.Except -> AppRule.Except(rule.packages.filter { pkg -> tryAddApp(pkg) { addDisallowedApplication(pkg) } })
+    }
+
+    /** add()가 성공하면 true, 패키지를 못 찾으면 로그를 남기고 false */
+    private fun tryAddApp(packageName: String, add: () -> Unit): Boolean = try {
+        add()
+        true
+    } catch (e: PackageManager.NameNotFoundException) {
+        Log.w(TAG, "app not found, skipped: $packageName (${e.message})")
+        false
+    }
+
+    // 매니페스트 <queries>에 없는 패키지는 Android 11부터 설치돼 있어도 안 보인다(NameNotFoundException).
+    private fun isInstalled(packageName: String): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+        } else {
+            // int 플래그 버전은 API 33부터 deprecated라서 버전으로 나눈다.
+            @Suppress("DEPRECATION")
+            packageManager.getApplicationInfo(packageName, 0)
+        }
+        true
+    } catch (_: PackageManager.NameNotFoundException) {
+        false
     }
 
     private suspend fun runTunnel(fd: ParcelFileDescriptor) = coroutineScope {
@@ -143,7 +205,7 @@ class PracticeVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        _isRunning.value = false
+        _runningPreset.value = null
         // fd와 소켓을 먼저 닫아 블로킹 중인 read()/receive()를 깨운 뒤 job을 취소한다. 두 번 호출돼도 null이라 안전하다.
         tunFd?.close()
         tunFd = null
@@ -190,13 +252,19 @@ class PracticeVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.mg.vpnpractice.action.START"
         const val ACTION_STOP = "com.mg.vpnpractice.action.STOP"
+
+        /** 시작 Intent에 넣는 프리셋 이름(PolicyPreset.name) */
+        const val EXTRA_PRESET = "com.mg.vpnpractice.extra.PRESET"
         private const val TAG = "PracticeVpn"
         private const val CHANNEL_ID = "vpn_status"
         private const val NOTIFICATION_ID = 1
 
-        private val _isRunning = MutableStateFlow(false)
+        private val _runningPreset = MutableStateFlow<PolicyPreset?>(null)
 
-        /** UI가 실행 상태를 관찰하는 용도 */
-        val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
+        /**
+         * UI가 관찰하는 실행 중인 프리셋. null이면 중지됨.
+         * 실행 여부와 정책을 따로 두면 "실행 중인데 정책 없음" 같은 어긋난 상태가 생길 수 있어 하나로 둔다.
+         */
+        val runningPreset: StateFlow<PolicyPreset?> = _runningPreset.asStateFlow()
     }
 }
