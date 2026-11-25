@@ -22,7 +22,7 @@
 - `Only`에서 설치된 패키지가 0개면 시작하지 않는다(Logcat 경고만, 화면은 "중지됨"). `Except`에서 0개면 경고 후 시작한다
 - 선택은 디스크에 저장하지 않는다(`rememberSaveable`까지만). 새 라이브러리 없음
 - 패키지 `com.mg.vpnpractice.vpn`. VpnService 코드에는 왜 그렇게 했는지 짧은 주석 (CLAUDE.md)
-- 커밋 메시지는 한국어, 끝에 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
+- 커밋 메시지는 한국어. `Co-Authored-By` 줄은 넣지 않는다
 - 작업 브랜치 `feat/split-tunnel-app-policy` (이미 있음, 설계 문서 커밋됨). 이 계획 문서는 Task 1 커밋에 포함한다
 - 마무리 확인: `./gradlew assembleDebug testDebugUnitTest lintDebug`
 
