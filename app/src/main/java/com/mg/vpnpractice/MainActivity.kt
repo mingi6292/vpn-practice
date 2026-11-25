@@ -18,13 +18,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.Button
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +72,8 @@ private fun VpnScreen(modifier: Modifier = Modifier) {
     // 실행 중에는 서비스가 실제로 쓰는 프리셋을 보여 줘서, 앱을 다시 열어도 화면과 실제 정책이 어긋나 보이지 않게 한다.
     val shownPreset = runningPreset ?: selected
     val scope = rememberCoroutineScope()
+    // 앱을 다시 열었을 때 실행 중인 프리셋을 선택값에 맞춰 둔다. 중지해도 라디오가 튀지 않는다.
+    LaunchedEffect(runningPreset) { runningPreset?.let { selected = it } }
 
     // 동의 화면 결과. RESULT_OK일 때만 서비스를 시작하고, 거부하면 아무것도 하지 않는다(상태는 "중지됨" 그대로).
     val consentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -81,7 +87,7 @@ private fun VpnScreen(modifier: Modifier = Modifier) {
     }
 
     Column(
-        modifier = modifier.padding(16.dp),
+        modifier = modifier.padding(16.dp).selectableGroup(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         val preset = runningPreset
@@ -94,7 +100,7 @@ private fun VpnScreen(modifier: Modifier = Modifier) {
         )
         PolicyPreset.entries.forEach { option ->
             Row(
-                modifier = Modifier.selectable(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(
                     selected = option == shownPreset,
                     enabled = runningPreset == null,
                     role = Role.RadioButton,

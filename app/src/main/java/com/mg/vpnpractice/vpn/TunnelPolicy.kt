@@ -55,7 +55,7 @@ enum class PolicyPreset(val policy: TunnelPolicy) {
     companion object {
         /**
          * 모르는 이름이나 null은 ALL_APPS로 떨어진다.
-         * 시스템이 Intent 없이 서비스를 다시 띄울 수 있어 이름이 null일 수 있기 때문이다.
+         * Always-on 등 extra 없이 서비스가 시작되면 이름이 null일 수 있기 때문이다.
          */
         fun fromName(name: String?): PolicyPreset =
             entries.firstOrNull { it.name == name } ?: ALL_APPS

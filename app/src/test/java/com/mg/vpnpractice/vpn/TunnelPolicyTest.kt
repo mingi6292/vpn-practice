@@ -35,6 +35,13 @@ class TunnelPolicyTest {
     fun only_with_no_installed_package_is_rejected() {
         val result = TunnelPolicy(listOf(route), AppRule.Only(listOf("a"))).resolve { false }
         assertTrue(result is PolicyResult.Reject)
+        assertTrue("a" in (result as PolicyResult.Reject).reason)
+    }
+
+    @Test
+    fun except_missing_packages_are_skipped_and_rest_applied() {
+        val result = TunnelPolicy(listOf(route), AppRule.Except(listOf("a", "b"))).resolve { it == "a" }
+        assertEquals(PolicyResult.Apply(listOf(route), AppRule.Except(listOf("a")), listOf("b")), result)
     }
 
     @Test

@@ -40,7 +40,7 @@ class PracticeVpnService : VpnService() {
         if (intent?.action == ACTION_STOP) {
             stopVpn()
         } else {
-            // extra가 없으면(시스템이 Intent 없이 다시 띄운 경우 등) 기본 프리셋으로 시작한다.
+            // extra 없이 시작된 경우(Always-on 등) 기본 프리셋으로 시작한다.
             startVpn(PolicyPreset.fromName(intent?.getStringExtra(EXTRA_PRESET)))
         }
         // 시스템이 서비스를 죽여도 자동 재시작하지 않는다. 재시작하려면 동의 상태를 다시 확인해야 한다.
@@ -87,10 +87,12 @@ class PracticeVpnService : VpnService() {
             return
         }
         tunFd = fd
+        // launch 전에 먼저 설정한다. 터널이 곧바로 실패해 stopVpn()이 null로 되돌린 뒤에
+        // 여기서 preset을 덮어쓰면 화면이 "실행 중"에 갇힌다.
+        _runningPreset.value = preset
         tunnelJob = serviceScope.launch { runTunnel(fd) }
         val routes = policy.routes.joinToString { "${it.address}/${it.prefixLength}" }
         Log.i(TAG, "policy=${preset.name} routes=$routes apps=$apps")
-        _runningPreset.value = preset
     }
 
     /**
