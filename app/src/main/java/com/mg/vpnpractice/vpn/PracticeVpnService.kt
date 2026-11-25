@@ -118,7 +118,9 @@ class PracticeVpnService : VpnService() {
                 if (length == 0) continue
                 logPacket("[from-server]", buffer, length)
                 // IPv6처럼 파싱하지 못하는 패킷도 TUN에는 그대로 쓴다. 해석은 시스템 네트워크 스택의 몫이다.
-                output.write(buffer, 0, length)
+                output.writePacket(buffer, length, isOpen = { fd.fileDescriptor.valid() }) {
+                    Log.w(TAG, "tun write failed: ${it.message}")
+                }
             }
         } catch (e: IOException) {
             // 소켓이 닫히면(SocketException) 또는 TUN fd가 닫히면 여기로 빠져나온다.
