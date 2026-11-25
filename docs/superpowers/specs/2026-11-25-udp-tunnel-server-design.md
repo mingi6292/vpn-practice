@@ -45,7 +45,7 @@ ZTNA Agent 입사 전에 "앱 TUN <-> UDP 터널 <-> 서버 Linux TUN" 왕복 �
 - 앱의 터널 루프는 소켓이 열려 있는 동안의 I/O 실패를 로그로 남기고 계속 돌며, 닫혔을 때만 끝난다. (구현 중 명확화)
 - 서버의 TUN IP 설정은 TUN을 만든 뒤 `ip` 명령을 실행해서 한다. JNA ioctl로 직접 하는 것보다 짧고 설명하기 쉽다. (내 선택)
 - 앱의 터널 소켓은 이 단계에서 `protect()`하지 않는다. 서버 주소 `10.0.2.2`가 라우트 `10.0.0.0/24` 밖이라 TUN으로 되돌아오지 않는다. 이유를 코드 주석으로 남기고 `protect()`는 6단계에서 다룬다. (내 선택, 필요하면 이 단계에 넣을 수 있다)
-- 서버 컨테이너 실행: `docker run --cap-add NET_ADMIN --device /dev/net/tun -p 5555:5555/udp`. Docker Desktop(WSL2)에서 `/dev/net/tun`이 열리는지는 구현 때 확인한다.
+- 서버 컨테이너 실행: `docker run --cap-add NET_ADMIN --device /dev/net/tun -p 127.0.0.1:5555:5555/udp`. 인증이 없어서 호스트의 loopback에만 연다. (리뷰 후 변경) Docker Desktop(WSL2)에서 `/dev/net/tun`이 열리는지는 구현 때 확인한다.
 - 새 라이브러리는 서버의 JNA뿐이다. 코루틴과 JUnit은 기존 Version Catalog 항목을 쓴다.
 
 ## 테스트

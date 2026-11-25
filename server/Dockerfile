@@ -1,6 +1,8 @@
 # 빌드와 실행 (저장소 루트에서, Git Bash는 MSYS_NO_PATHCONV=1 필요):
 #   ./gradlew :server:installDist && docker build -t vpn-practice-server server
-#   docker run -d --rm --name tunnel-server --cap-add NET_ADMIN --device /dev/net/tun -p 5555:5555/udp vpn-practice-server
+#   docker run -d --rm --name tunnel-server --cap-add NET_ADMIN --device /dev/net/tun -p 127.0.0.1:5555:5555/udp vpn-practice-server
+# 포트는 127.0.0.1에만 연다. 터널에 인증이 없어서(6단계) 모든 인터페이스에 열면 같은 LAN의 누구나 패킷을 넣을 수 있다.
+# 에뮬레이터의 10.0.2.2는 PC의 loopback이라 이대로 접속된다. 실기기를 붙일 때는 다시 정해야 한다.
 # Alpine(musl)이 아니라 Debian/Ubuntu 계열을 쓴다. JNA가 포함한 네이티브 라이브러리가 glibc용이다.
 FROM eclipse-temurin:17-jre
 
