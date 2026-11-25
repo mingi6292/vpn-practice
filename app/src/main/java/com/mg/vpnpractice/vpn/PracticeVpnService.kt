@@ -14,7 +14,6 @@ import com.mg.vpnpractice.R
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import java.net.PortUnreachableException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -97,12 +96,9 @@ class PracticeVpnService : VpnService() {
                     if (length < 0) break
                     if (length == 0) continue
                     logPacket("[to-server]", buffer, length)
-                    try {
-                        client.send(buffer, length)
-                    } catch (e: PortUnreachableException) {
-                        // 서버가 꺼져 있으면 이전 전송에 대한 ICMP 오류가 다음 send()에서 예외로 올라온다. 서비스는 계속 돈다.
-                        Log.w(TAG, "server unreachable: ${e.message}")
-                    }
+                    // 전송 하나가 실패해도(서버 꺼짐, 권한 없음) 루프는 계속 돈다.
+                    // 여기서 루프를 빠져나가면 fd가 닫혀서 "실행 중"인데 아무것도 안 되는 상태가 된다.
+                    client.tolerate({ Log.w(TAG, "send failed: ${it.message}") }) { send(buffer, length) }
                 }
             }
         } catch (e: IOException) {
@@ -117,12 +113,8 @@ class PracticeVpnService : VpnService() {
         val output = FileOutputStream(fd.fileDescriptor)
         try {
             while (true) {
-                val length = try {
-                    client.receive(buffer)
-                } catch (e: PortUnreachableException) {
-                    Log.w(TAG, "server unreachable: ${e.message}")
-                    continue
-                }
+                val length = client.tolerate({ Log.w(TAG, "receive failed: ${it.message}") }) { receive(buffer) }
+                    ?: continue
                 if (length == 0) continue
                 logPacket("[from-server]", buffer, length)
                 // IPv6처럼 파싱하지 못하는 패킷도 TUN에는 그대로 쓴다. 해석은 시스템 네트워크 스택의 몫이다.

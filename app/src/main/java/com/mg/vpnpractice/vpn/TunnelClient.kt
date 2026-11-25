@@ -1,6 +1,7 @@
 package com.mg.vpnpractice.vpn
 
 import java.io.Closeable
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -29,6 +30,19 @@ class TunnelClient(host: String, port: Int) : Closeable {
         socket.receive(packet)
         return packet.length
     }
+
+    /**
+     * 소켓이 열려 있는 동안의 I/O 실패(서버 꺼짐, 권한 없음 등)는 onError로 알리고 null을 돌려줘서 루프가 계속 돌게 한다.
+     * close()돼서 난 실패는 다시 던져서 루프를 끝낸다.
+     */
+    inline fun <T> tolerate(onError: (IOException) -> Unit, block: TunnelClient.() -> T): T? =
+        try {
+            block()
+        } catch (e: IOException) {
+            if (isClosed) throw e
+            onError(e)
+            null
+        }
 
     /** receive()가 블로킹 중이어도 소켓을 닫으면 예외로 깨어난다. 두 번 불러도 안전하다. */
     override fun close() {

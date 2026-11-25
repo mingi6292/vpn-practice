@@ -1,5 +1,6 @@
 package com.mg.vpnpractice.vpn
 
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -10,6 +11,9 @@ import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -93,5 +97,26 @@ class TunnelClientTest {
         client.close()
 
         assertTrue(client.isClosed)
+    }
+
+    // UDP 데이터그램 한도(65507바이트)를 넘겨 보내면 소켓이 열려 있어도 send()가 IOException을 던진다.
+    private val tooLarge = ByteArray(70_000)
+
+    @Test
+    fun tolerate_reports_failure_while_socket_is_open() {
+        var reported: IOException? = null
+
+        val result = client.tolerate({ reported = it }) { send(tooLarge, tooLarge.size) }
+
+        assertNull(result)
+        assertNotNull(reported)
+        assertFalse(client.isClosed)
+    }
+
+    @Test(expected = IOException::class)
+    fun tolerate_rethrows_after_close() {
+        client.close()
+
+        client.tolerate({ }) { send(byteArrayOf(1), 1) }
     }
 }

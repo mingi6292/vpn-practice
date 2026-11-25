@@ -4,6 +4,8 @@
 
     <!-- 터널 서버와 UDP 소켓으로 통신하려면 필요하다. 없으면 소켓 생성이 EPERM으로 실패한다. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17(API 37)부터 사설 대역(10.0.2.2, 10.0.0.1)으로 통신하려면 런타임 권한이 필요하다. 없으면 UDP 전송이 EPERM으로 실패한다. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
