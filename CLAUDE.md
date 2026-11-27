@@ -16,7 +16,7 @@ Android VpnService 연습 앱. ZTNA Agent 팀 입사 전에 VpnService/ZTNA 관�
 - 진행 순서는 `docs/vpn-practice-plan.md`를 따른다. 해당 단계 범위를 넘는 기능은 먼저 확인하고 만든다
 - VpnService 관련 코드에는 왜 그렇게 했는지 짧은 주석을 단다 (예: `protect()`를 호출하는 이유, fd를 닫는 시점)
 - 파서 같은 순수 로직은 단위 테스트를 붙인다
-- 작업이 끝나면 `./gradlew assembleDebug testDebugUnitTest lintDebug`가 통과하는지 확인한다
+- 작업이 끝나면 `./gradlew assembleDebug testDebugUnitTest lintDebug :server:test :tunnel-protocol:test`가 통과하는지 확인한다 (서버와 공용 모듈은 순수 JVM 모듈이라 `testDebugUnitTest`에 포함되지 않는다)
 - 커밋 메시지는 한국어로 쓴다
 
 ## 참고 문서
