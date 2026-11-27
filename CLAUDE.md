@@ -3,7 +3,7 @@
 ## 프로젝트
 Android VpnService 연습 앱. ZTNA Agent 팀 입사 전에 VpnService/ZTNA 관련 코드를 직접 짜 보며 익히는 용도다. 사용자가 코드를 직접 설명할 수 있어야 하므로 코드 양보다 이해하기 쉬운 코드가 우선이야.
 
-구조: Android 앱(VpnService, TUN) <-UDP 평문 터널-> Docker로 띄운 터널 서버(`server/` 모듈, Kotlin/JVM + JNA로 Linux TUN 제어). 평문 터널을 먼저 만들고 TLS/인증은 나중에 붙인다.
+구조: Android 앱(VpnService, TUN) <-TCP+TLS 터널(길이 접두어 프레임)-> Docker로 띄운 터널 서버(`server/` 모듈, Kotlin/JVM + JNA로 Linux TUN 제어). 프레임 형식은 공용 모듈 `tunnel-protocol/`에 있다. TLS는 연습용 CA로 서버만 검증하고, 사용자 인증은 8단계에서 붙인다.
 
 ## 기술 스택
 - Kotlin, Jetpack Compose, Coroutines

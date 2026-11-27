@@ -1,57 +1,33 @@
 package com.mg.vpnpractice.vpn
 
+import com.mg.vpnpractice.protocol.PacketFrame
 import java.io.Closeable
-import java.io.IOException
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
+import java.net.Socket
 
 /**
- * 터널 서버와 UDP로 패킷을 주고받는다. 데이터그램 하나가 IP 패킷 하나이고 터널 헤더는 없다.
- * 소켓 생성과 송수신은 네트워크 I/O라서 반드시 IO 스레드에서 쓴다.
+ * 연결된 소켓 위에서 IP 패킷을 PacketFrame으로 주고받는다. TLS를 모른다(TlsConnector가 연결한 SSLSocket을 받는다).
+ * 송수신은 네트워크 I/O라서 반드시 IO 스레드에서 쓴다.
+ *
+ * TCP-over-TCP 한계: 앱의 TCP가 이 TCP 터널 위를 지나서, 손실이 나면 두 TCP가 함께 재전송하고
+ * 패킷 하나가 늦으면 뒤 패킷이 모두 기다린다. 자세한 설명은 서버 TunnelServer 클래스 주석에 있다.
  */
-class TunnelClient(host: String, port: Int) : Closeable {
+class TunnelClient(private val socket: Socket) : Closeable {
 
-    // 서버 주소로 connect()하면 커널이 다른 곳에서 온 데이터그램을 걸러 준다.
-    // 일부러 protect()를 호출하지 않는다. 서버 주소(10.0.2.2)가 TUN 라우트(10.0.0.0/24) 밖이라
-    // 이 소켓의 패킷은 TUN으로 되돌아오지 않는다. 라우트를 넓히거나 서버가 대역 안에 있으면 protect()가 필요하다(6단계).
-    private val socket = DatagramSocket().apply { connect(InetAddress.getByName(host), port) }
+    private val input = socket.getInputStream()
+    private val output = socket.getOutputStream()
 
-    val localPort: Int get() = socket.localPort
     val isClosed: Boolean get() = socket.isClosed
 
+    /** 패킷 하나를 프레임 하나로 보낸다. */
     fun send(buffer: ByteArray, length: Int) {
-        socket.send(DatagramPacket(buffer, length))
+        PacketFrame.write(output, buffer, length)
     }
 
-    /** 블로킹 수신. 읽은 길이를 돌려주고, close()되면 SocketException으로 빠져나온다. */
-    fun receive(buffer: ByteArray): Int {
-        val packet = DatagramPacket(buffer, buffer.size)
-        socket.receive(packet)
-        return packet.length
-    }
-
-    /**
-     * 소켓이 열려 있는 동안의 I/O 실패(서버 꺼짐, 권한 없음 등)는 onError로 알리고 null을 돌려줘서 루프가 계속 돌게 한다.
-     * close()돼서 난 실패는 다시 던져서 루프를 끝낸다.
-     */
-    inline fun <T> tolerate(onError: (IOException) -> Unit, block: TunnelClient.() -> T): T? =
-        try {
-            block()
-        } catch (e: IOException) {
-            if (isClosed) throw e
-            onError(e)
-            null
-        }
+    /** 블로킹 수신. 본문 길이를 돌려주고, 서버가 연결을 닫으면 -1. 잘못된 길이면 InvalidFrameException. */
+    fun receive(buffer: ByteArray): Int = PacketFrame.read(input, buffer)
 
     /** receive()가 블로킹 중이어도 소켓을 닫으면 예외로 깨어난다. 두 번 불러도 안전하다. */
     override fun close() {
         socket.close()
-    }
-
-    companion object {
-        // 에뮬레이터에서 10.0.2.2는 호스트 PC를 가리킨다.
-        const val SERVER_HOST = "10.0.2.2"
-        const val SERVER_PORT = 5555
     }
 }
