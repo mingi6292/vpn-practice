@@ -141,17 +141,23 @@ class PracticeVpnService : VpnService() {
         } catch (e: IOException) {
             // 서버 꺼짐, 인증서 검증 실패(SSLHandshakeException), 호스트 이름 불일치 등. 화면은 "중지됨"으로 돌아간다.
             Log.w(TAG, "cannot open tunnel: $e")
-            stopVpn()
+            stopIfSession(fd)
             return@coroutineScope
         } catch (e: GeneralSecurityException) {
             // 앱에 넣은 CA 인증서를 읽지 못한 경우
             Log.w(TAG, "cannot load practice CA: $e")
-            stopVpn()
+            stopIfSession(fd)
+            return@coroutineScope
+        }
+        // 연결은 최대 5초 걸린다. 그사이 중지 후 다시 시작했다면 tunFd는 새 세션의 fd다.
+        // 늦게 끝난 연결이 새 세션의 tunnel을 덮어쓰지 않게, 이 세션의 fd가 아니면 닫고 끝낸다.
+        if (tunFd !== fd) {
+            client.close()
             return@coroutineScope
         }
         tunnel = client
-        if (tunFd == null) {
-            // 연결하는 사이에 stopVpn()이 이미 지나갔다. 아무도 닫아 주지 않으니 직접 닫는다.
+        if (tunFd !== fd) {
+            // 위 확인과 이 줄 사이에 stopVpn()이 지나갔다. 아무도 닫아 주지 않으니 직접 닫는다.
             client.close()
             return@coroutineScope
         }
@@ -220,6 +226,11 @@ class PracticeVpnService : VpnService() {
      */
     private fun stopIfCurrent(client: TunnelClient) {
         if (tunnel === client) stopVpn()
+    }
+
+    /** 연결 실패도 같은 이유로, 실패한 연결이 지금 세션(fd)의 것일 때만 VPN을 멈춘다. 앞 세션의 늦은 실패가 새 세션을 멈추지 않게 한다. */
+    private fun stopIfSession(fd: ParcelFileDescriptor) {
+        if (tunFd === fd) stopVpn()
     }
 
     private fun logPacket(direction: String, buffer: ByteArray, length: Int) {
