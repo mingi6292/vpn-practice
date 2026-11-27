@@ -16,6 +16,8 @@ captures/
 # Signing (never commit)
 *.jks
 *.keystore
+# 연습용 CA와 서버 개인키가 들어 있다. 저장소에 올리면 누구나 서버 행세를 할 수 있어 커밋하지 않는다.
+certs/
 keystore.properties
 
 # OS
