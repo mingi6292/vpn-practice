@@ -249,11 +249,15 @@ class PracticeVpnService : VpnService() {
 
     private fun stopVpn() {
         _runningPreset.value = null
-        // fd와 소켓을 먼저 닫아 블로킹 중인 read()/receive()를 깨운 뒤 job을 취소한다. 두 번 호출돼도 null이라 안전하다.
-        tunFd?.close()
+        // 필드를 먼저 비우고 나서 닫는다. 닫으면 루프가 깨어나 stopIfCurrent()를 부르는데,
+        // 그때 tunnel이 아직 남아 있으면 IO 스레드에서 stopVpn()이 한 번 더 돈다.
+        val fd = tunFd
         tunFd = null
-        tunnel?.close()
+        val client = tunnel
         tunnel = null
+        // fd와 소켓을 닫아 블로킹 중인 read()/receive()를 깨운 뒤 job을 취소한다. 두 번 호출돼도 null이라 안전하다.
+        fd?.close()
+        client?.close()
         tunnelJob?.cancel()
         tunnelJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
