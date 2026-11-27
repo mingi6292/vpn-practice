@@ -125,6 +125,8 @@ class TunnelServer(
                 continue
             }
             if (length < 0) return
+            // 빈 패킷은 프레임으로 만들 수 없어(write가 예외) 서버가 죽으니 건너뛴다.
+            if (length == 0) continue
             val socket = current.get()
             if (socket == null) {
                 println("drop ${length}B (no client)")

@@ -33,9 +33,11 @@ import kotlinx.coroutines.launch
 class PracticeVpnService : VpnService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // tunFd와 tunnel은 stopVpn()(메인 스레드)과 runTunnel()(IO 스레드)이 함께 접근한다.
+    // 그 밖의 메인/IO 경합은 9단계에서 다룬다.
+    @Volatile
     private var tunFd: ParcelFileDescriptor? = null
     private var tunnelJob: Job? = null
-    // stopVpn()(메인 스레드)과 runTunnel()(IO 스레드)이 함께 접근한다.
     @Volatile
     private var tunnel: TunnelClient? = null
 
@@ -150,7 +152,7 @@ class PracticeVpnService : VpnService() {
             stopIfSession(fd)
             return@coroutineScope
         }
-        // 연결은 최대 5초 걸린다. 그사이 중지 후 다시 시작했다면 tunFd는 새 세션의 fd다.
+        // 연결과 핸드셰이크에 각각 최대 5초가 걸리고, 핸드셰이크는 읽기마다 5초라 더 걸릴 수도 있다. 그사이 중지 후 다시 시작했다면 tunFd는 새 세션의 fd다.
         // 늦게 끝난 연결이 새 세션의 tunnel을 덮어쓰지 않게, 이 세션의 fd가 아니면 닫고 끝낸다.
         if (tunFd !== fd) {
             client.close()

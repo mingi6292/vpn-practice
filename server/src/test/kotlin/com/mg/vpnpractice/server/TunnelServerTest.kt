@@ -129,6 +129,19 @@ class TunnelServerTest {
     }
 
     @Test
+    fun empty_tun_read_is_skipped() {
+        val client = newClient()
+        client.sendFrame(1)
+        waitUntil { tun.written.size == 1 }
+
+        tun.feed(byteArrayOf())
+        tun.feed(byteArrayOf(6))
+
+        // 빈 패킷은 무시되고 서버도 살아 있어 다음 패킷만 도착한다
+        assertArrayEquals(byteArrayOf(6), client.readFrame())
+    }
+
+    @Test
     fun tun_packet_is_dropped_without_client() {
         tun.feed(byteArrayOf(7))
         Thread.sleep(200) // downlink가 패킷을 읽고 버릴 시간
