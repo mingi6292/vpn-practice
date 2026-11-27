@@ -12,7 +12,7 @@ object TestPacketSender {
         val payload = "hello".toByteArray()
         return try {
             // 일부러 protect()를 호출하지 않는다. protect()하면 소켓이 VPN을 우회해서 TUN으로 들어가지 않아 로그가 안 남는다.
-            // 터널 소켓(TunnelClient)도 지금은 protect()가 없는데, 서버 주소가 TUN 라우트 밖이라 가능한 것이다.
+            // 터널 TCP 소켓(TlsConnector)도 지금은 protect()가 없는데, 서버 주소가 TUN 라우트 밖이라 가능한 것이다.
             DatagramSocket().use {
                 it.send(DatagramPacket(payload, payload.size, InetAddress.getByName(host), 9999))
             }

@@ -1,84 +1,86 @@
 package com.mg.vpnpractice.vpn
 
+import com.mg.vpnpractice.protocol.InvalidFrameException
+import com.mg.vpnpractice.protocol.PacketFrame
 import java.io.IOException
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetAddress
-import java.net.SocketException
+import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 class TunnelClientTest {
     private val loopback = InetAddress.getLoopbackAddress()
-    private lateinit var server: DatagramSocket
+    private lateinit var listener: ServerSocket
+    private lateinit var server: Socket
     private lateinit var client: TunnelClient
 
     @Before
     fun setUp() {
-        server = DatagramSocket(0, loopback).apply { soTimeout = 2000 }
-        client = TunnelClient("127.0.0.1", server.localPort)
+        listener = ServerSocket(0, 50, loopback)
+        val socket = Socket(loopback, listener.localPort)
+        server = listener.accept().apply { soTimeout = 2000 }
+        client = TunnelClient(socket)
     }
 
     @After
     fun tearDown() {
         client.close()
         server.close()
+        listener.close()
     }
 
-    private fun sendToClient(from: DatagramSocket, bytes: ByteArray) =
-        from.send(DatagramPacket(bytes, bytes.size, loopback, client.localPort))
-
     @Test
-    fun send_delivers_datagram_to_server() {
+    fun send_writes_one_frame() {
         client.send(byteArrayOf(1, 2, 3), 3)
 
-        val received = DatagramPacket(ByteArray(100), 100)
-        server.receive(received)
-        assertArrayEquals(byteArrayOf(1, 2, 3), received.data.copyOf(received.length))
+        val buffer = ByteArray(PacketFrame.MAX_PACKET_SIZE)
+        val length = PacketFrame.read(server.getInputStream(), buffer)
+        assertArrayEquals(byteArrayOf(1, 2, 3), buffer.copyOf(length))
     }
 
     @Test
-    fun receive_returns_server_datagram() {
-        sendToClient(server, byteArrayOf(4, 5))
+    fun receive_returns_frame_payload() {
+        PacketFrame.write(server.getOutputStream(), byteArrayOf(9, 8), 2)
 
-        val buffer = ByteArray(100)
+        val buffer = ByteArray(PacketFrame.MAX_PACKET_SIZE)
         val length = client.receive(buffer)
 
         assertEquals(2, length)
-        assertArrayEquals(byteArrayOf(4, 5), buffer.copyOf(length))
+        assertArrayEquals(byteArrayOf(9, 8), buffer.copyOf(length))
     }
 
     @Test
-    fun datagram_from_other_source_is_ignored() {
-        DatagramSocket(0, loopback).use { other -> sendToClient(other, byteArrayOf(0)) }
-        sendToClient(server, byteArrayOf(6))
+    fun receive_returns_minus_one_when_server_closes() {
+        server.close()
 
-        val buffer = ByteArray(100)
-        val length = client.receive(buffer)
+        assertEquals(-1, client.receive(ByteArray(PacketFrame.MAX_PACKET_SIZE)))
+    }
 
-        assertEquals(1, length)
-        assertEquals(6, buffer[0].toInt())
+    @Test(expected = InvalidFrameException::class)
+    fun receive_throws_on_invalid_length() {
+        server.getOutputStream().write(byteArrayOf(0x00, 0x00))
+
+        client.receive(ByteArray(PacketFrame.MAX_PACKET_SIZE))
     }
 
     @Test
     fun close_unblocks_receive() {
-        val failure = AtomicReference<Throwable?>()
+        // receive()가 IOException으로 빠져나오든 -1을 돌려주든 블로킹에서 풀리기만 하면 된다.
+        val outcome = AtomicReference<Any?>()
         val finished = CountDownLatch(1)
         Thread {
             try {
-                client.receive(ByteArray(100))
+                outcome.set(client.receive(ByteArray(PacketFrame.MAX_PACKET_SIZE)))
             } catch (e: Throwable) {
-                failure.set(e)
+                outcome.set(e)
             } finally {
                 finished.countDown()
             }
@@ -88,7 +90,8 @@ class TunnelClientTest {
         client.close()
 
         assertTrue(finished.await(2, TimeUnit.SECONDS))
-        assertTrue(failure.get() is SocketException)
+        val result = outcome.get()
+        assertTrue("unexpected: $result", result is IOException || result == -1)
     }
 
     @Test
@@ -97,26 +100,5 @@ class TunnelClientTest {
         client.close()
 
         assertTrue(client.isClosed)
-    }
-
-    // UDP 데이터그램 한도(65507바이트)를 넘겨 보내면 소켓이 열려 있어도 send()가 IOException을 던진다.
-    private val tooLarge = ByteArray(70_000)
-
-    @Test
-    fun tolerate_reports_failure_while_socket_is_open() {
-        var reported: IOException? = null
-
-        val result = client.tolerate({ reported = it }) { send(tooLarge, tooLarge.size) }
-
-        assertNull(result)
-        assertNotNull(reported)
-        assertFalse(client.isClosed)
-    }
-
-    @Test(expected = IOException::class)
-    fun tolerate_rethrows_after_close() {
-        client.close()
-
-        client.tolerate({ }) { send(byteArrayOf(1), 1) }
     }
 }

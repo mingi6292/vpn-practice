@@ -6,7 +6,7 @@
 ```
 Android 앱 (VpnService, TUN)  <-- UDP 평문 터널 -->  Docker 터널 서버 (server/, Kotlin/JVM + JNA, Linux TUN)
 ```
-평문 터널을 먼저 만들고 TLS/인증은 나중에 붙인다.
+평문 UDP 터널을 먼저 만들고, 6단계에서 TCP+TLS 터널로 바꾼다. 인증은 그 뒤에 붙인다.
 배포는 GitHub Releases다. 태그를 push하면 서명된 APK가 첨부된다. 서명 키는 GitHub Secrets로 주입한다.
 
 ## 진행 순서
@@ -15,7 +15,10 @@ Android 앱 (VpnService, TUN)  <-- UDP 평문 터널 -->  Docker 터널 서버 (
 3. 앱에서 TUN 열기와 패킷 파싱
 4. Docker 서버와 평문 UDP 터널
 5. split tunnel / 앱별 정책
-6. TLS / 인증
+6. TLS 터널 (인증 없음)
+7. `protect()` / Always-on
+8. 사용자 인증 / 서버가 정책을 내려주는 방식
+9. 실행 중 정책 변경 (재 `establish()`, `tunFd` 경합 정리)
 
 ## 연습 범위
 1. `VpnService.prepare()`로 사용자 동의 받기
@@ -28,10 +31,16 @@ Android 앱 (VpnService, TUN)  <-- UDP 평문 터널 -->  Docker 터널 서버 (
    - 이후 파싱한 패킷을 UDP 터널로 서버에 보내고, 서버가 Linux TUN으로 되돌려 주는 데까지 확장한다
 5. 포그라운드 서비스 알림과 `onRevoke()` 처리
    - ZTNA 관점: 에이전트가 항상 떠 있어야 하므로 서비스가 죽거나 권한이 회수될 때의 복구
-6. Always-on VPN 대응과 `protect()`로 소켓 루프 막기
-   - 터널용 UDP 소켓이 다시 TUN으로 들어가지 않도록 `protect()`를 호출한다
-7. (6단계) TLS 적용과 사용자/기기 인증
-   - ZTNA 관점: 인증된 주체에게만 터널을 열어 준다
+6. (7단계) Always-on VPN 대응과 `protect()`로 소켓 루프 막기
+   - 터널 소켓이 다시 TUN으로 들어가지 않도록 `protect()`를 호출한다
+7. (6단계) TLS 터널
+   - UDP 터널을 TCP+TLS 연결 하나로 바꾸고, 연습용 CA로 서버 인증서와 호스트 이름을 검증한다. 클라이언트 인증은 하지 않는다
+   - ZTNA 관점: 에이전트와 게이트웨이 사이의 트래픽을 암호화하고, 접속한 서버가 진짜인지 확인한다
+8. (8단계) 사용자/기기 인증과 서버 정책
+   - ZTNA 관점: 인증된 주체에게만 터널을 열어 주고, 그 주체의 정책을 서버가 내려준다
+9. (9단계) 실행 중 정책 변경
+   - 새 정책으로 다시 `establish()`하고 읽기/쓰기 루프를 새 fd로 옮긴다
+   - ZTNA 관점: 정책이 바뀌어도 사용자가 VPN을 껐다 켜지 않게 한다
 
 ## 학습 점검 질문
 - VPN 동의 Intent가 null일 때와 아닐 때 흐름이 어떻게 다른가
@@ -42,3 +51,5 @@ Android 앱 (VpnService, TUN)  <-- UDP 평문 터널 -->  Docker 터널 서버 (
 - Android 14 이상에서 포그라운드 서비스 타입은 무엇으로 선언했나
 - 앱별 정책은 어디에서 결정하고 어떻게 테스트하나
 - 평문 터널에서 TLS/인증을 붙이면 어디가 바뀌나
+- 클라이언트는 무엇을 근거로 서버 인증서를 믿나. 호스트 이름 검증은 왜 따로 필요한가
+- TCP 위에 TCP를 실으면 무엇이 문제인가

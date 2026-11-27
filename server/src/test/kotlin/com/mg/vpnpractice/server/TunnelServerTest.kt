@@ -1,12 +1,16 @@
 package com.mg.vpnpractice.server
 
+import com.mg.vpnpractice.protocol.PacketFrame
 import java.io.IOException
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,6 +20,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 
@@ -53,20 +58,35 @@ private class FakeTun : Tun {
 class TunnelServerTest {
     private val loopback = InetAddress.getLoopbackAddress()
     private val tun = FakeTun()
-    private val serverSocket = DatagramSocket(0, loopback)
-    private val server = TunnelServer(tun, serverSocket)
-    private val clients = mutableListOf<DatagramSocket>()
+    private val serverSocket = ServerSocket(0, 50, loopback)
+
+    // 테스트마다 핸드셰이크 동작을 바꿀 수 있게 서버는 이 변수를 거쳐 부른다.
+    @Volatile private var handshake: (Socket) -> Unit = {}
+    private val server = TunnelServer(tun, serverSocket) { handshake(it) }
+    private val clients = mutableListOf<Socket>()
+    private val releaseHandshake = CountDownLatch(1)
     private lateinit var runJob: Job
 
-    private fun newClient() = DatagramSocket(0, loopback).apply { soTimeout = 2000 }.also { clients += it }
+    private fun newClient() =
+        Socket(loopback, serverSocket.localPort).apply { soTimeout = 2000 }.also { clients += it }
 
-    private fun DatagramSocket.sendToServer(bytes: ByteArray) =
-        send(DatagramPacket(bytes, bytes.size, loopback, serverSocket.localPort))
+    private fun Socket.sendFrame(vararg bytes: Byte) = PacketFrame.write(getOutputStream(), bytes, bytes.size)
 
-    private fun DatagramSocket.receiveBytes(): ByteArray {
-        val packet = DatagramPacket(ByteArray(100), 100)
-        receive(packet)
-        return packet.data.copyOf(packet.length)
+    private fun Socket.readFrame(): ByteArray {
+        val buffer = ByteArray(PacketFrame.MAX_PACKET_SIZE)
+        val length = PacketFrame.read(getInputStream(), buffer)
+        return buffer.copyOf(length)
+    }
+
+    /** 서버가 이 연결을 닫았는지 본다. 읽기 타임아웃은 "닫히지 않았다"는 뜻이라 실패로 친다. */
+    private fun Socket.assertClosedByServer() {
+        try {
+            assertEquals(-1, getInputStream().read())
+        } catch (e: SocketTimeoutException) {
+            fail("connection was not closed by server")
+        } catch (e: IOException) {
+            // 서버가 RST로 닫으면 IOException이 난다. 이것도 닫힌 것이다.
+        }
     }
 
     private fun waitUntil(condition: () -> Boolean) {
@@ -83,71 +103,129 @@ class TunnelServerTest {
     @After
     fun stop() {
         server.close()
+        // 멈춘 핸드셰이크는 close() 뒤에 풀어 준다. 그 연결이 닫힌 서버에 남지 않는지도 함께 확인된다.
+        releaseHandshake.countDown()
         clients.forEach { it.close() }
         runBlocking { withTimeout(2000) { runJob.join() } }
     }
 
     @Test
-    fun datagram_is_written_to_tun() {
-        newClient().sendToServer(byteArrayOf(1, 2, 3))
+    fun frame_from_client_is_written_to_tun() {
+        newClient().sendFrame(1, 2, 3)
 
         waitUntil { tun.written.size == 1 }
         assertArrayEquals(byteArrayOf(1, 2, 3), tun.written[0])
     }
 
     @Test
-    fun tun_packet_is_sent_to_last_client() {
+    fun tun_packet_is_framed_to_current_client() {
         val client = newClient()
-        client.sendToServer(byteArrayOf(1))
-        waitUntil { tun.written.size == 1 }
+        client.sendFrame(1)
+        waitUntil { tun.written.size == 1 } // uplink가 돌면 이미 현재 연결이다
 
         tun.feed(byteArrayOf(9, 8))
 
-        assertArrayEquals(byteArrayOf(9, 8), client.receiveBytes())
+        assertArrayEquals(byteArrayOf(9, 8), client.readFrame())
     }
 
     @Test
-    fun tun_packet_before_any_client_is_dropped() {
+    fun empty_tun_read_is_skipped() {
+        val client = newClient()
+        client.sendFrame(1)
+        waitUntil { tun.written.size == 1 }
+
+        tun.feed(byteArrayOf())
+        tun.feed(byteArrayOf(6))
+
+        // 빈 패킷은 무시되고 서버도 살아 있어 다음 패킷만 도착한다
+        assertArrayEquals(byteArrayOf(6), client.readFrame())
+    }
+
+    @Test
+    fun tun_packet_is_dropped_without_client() {
         tun.feed(byteArrayOf(7))
         Thread.sleep(200) // downlink가 패킷을 읽고 버릴 시간
 
         val client = newClient()
-        client.sendToServer(byteArrayOf(4))
+        client.sendFrame(4)
         waitUntil { tun.written.size == 1 }
         tun.feed(byteArrayOf(5))
 
         // 버려진 [7]이 아니라 이후의 [5]가 도착해야 한다
-        assertArrayEquals(byteArrayOf(5), client.receiveBytes())
+        assertArrayEquals(byteArrayOf(5), client.readFrame())
     }
 
     @Test
-    fun client_address_follows_latest_sender() {
+    fun new_connection_replaces_previous() {
         val a = newClient()
-        val b = newClient()
-        a.sendToServer(byteArrayOf(1))
+        a.sendFrame(1)
         waitUntil { tun.written.size == 1 }
-        b.sendToServer(byteArrayOf(2))
+        val b = newClient()
+        b.sendFrame(2)
         waitUntil { tun.written.size == 2 }
 
+        a.assertClosedByServer()
         tun.feed(byteArrayOf(3))
-
-        assertArrayEquals(byteArrayOf(3), b.receiveBytes())
+        assertArrayEquals(byteArrayOf(3), b.readFrame())
     }
 
     @Test
-    fun tun_write_failure_does_not_stop_relay() {
+    fun failed_handshake_keeps_current_connection() {
+        val calls = AtomicInteger()
+        handshake = { if (calls.incrementAndGet() == 2) throw IOException("fake handshake failure") }
+        val a = newClient()
+        a.sendFrame(1)
+        waitUntil { tun.written.size == 1 }
+
+        val bad = newClient()
+        bad.assertClosedByServer()
+
+        tun.feed(byteArrayOf(3))
+        assertArrayEquals(byteArrayOf(3), a.readFrame())
+    }
+
+    @Test
+    fun stalled_handshake_does_not_block_accept() {
+        val calls = AtomicInteger()
+        handshake = { if (calls.incrementAndGet() == 1) releaseHandshake.await(5, TimeUnit.SECONDS) }
+        newClient() // 핸드셰이크에서 멈추는 연결
+        waitUntil { calls.get() == 1 }
+
+        val b = newClient()
+        b.sendFrame(2)
+        waitUntil { tun.written.size == 1 }
+
+        tun.feed(byteArrayOf(6))
+        assertArrayEquals(byteArrayOf(6), b.readFrame())
+    }
+
+    @Test
+    fun invalid_length_closes_only_that_connection() {
+        val a = newClient()
+        a.getOutputStream().write(byteArrayOf(0x00, 0x00)) // 길이 0은 잘못된 프레임
+
+        a.assertClosedByServer()
+
+        val b = newClient()
+        b.sendFrame(5)
+        waitUntil { tun.written.size == 1 }
+        tun.feed(byteArrayOf(6))
+        assertArrayEquals(byteArrayOf(6), b.readFrame())
+    }
+
+    @Test
+    fun tun_write_failure_keeps_connection() {
         tun.failNextWrites = 1
         val client = newClient()
-        client.sendToServer(byteArrayOf(1))
-        Thread.sleep(100)
-        client.sendToServer(byteArrayOf(2))
+        client.sendFrame(1)
+        client.sendFrame(2)
 
         waitUntil { tun.written.size == 1 }
         assertArrayEquals(byteArrayOf(2), tun.written[0])
     }
 
     @Test
-    fun close_stops_run() {
+    fun close_ends_run() {
         server.close()
 
         runBlocking { withTimeout(2000) { runJob.join() } }

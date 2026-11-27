@@ -13,9 +13,12 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import com.mg.vpnpractice.R
+import com.mg.vpnpractice.protocol.PacketFrame
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.GeneralSecurityException
+import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,13 +29,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** TUN을 열고 패킷을 로그로 남기면서 UDP 터널로 서버와 주고받는 연습용 VpnService. */
+/** TUN을 열고 패킷을 로그로 남기면서 TLS 터널로 서버와 주고받는 연습용 VpnService. */
 class PracticeVpnService : VpnService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // tunFd와 tunnel은 stopVpn()(메인 스레드)과 runTunnel()(IO 스레드)이 함께 접근한다.
+    // 그 밖의 메인/IO 경합은 9단계에서 다룬다.
+    @Volatile
     private var tunFd: ParcelFileDescriptor? = null
     private var tunnelJob: Job? = null
-    // stopVpn()(메인 스레드)과 runTunnel()(IO 스레드)이 함께 접근한다.
     @Volatile
     private var tunnel: TunnelClient? = null
 
@@ -129,17 +134,33 @@ class PracticeVpnService : VpnService() {
     }
 
     private suspend fun runTunnel(fd: ParcelFileDescriptor) = coroutineScope {
-        // 소켓 생성은 네트워크 I/O라 메인 스레드(startVpn)가 아니라 IO 스레드인 여기서 한다.
+        // 연결은 네트워크 I/O라 메인 스레드(startVpn)가 아니라 IO 스레드인 여기서 한다.
+        // 순서: TCP 연결 -> TLS 핸드셰이크 -> 호스트 이름 검증(TlsConnector) -> TunnelClient -> 읽기/쓰기 루프.
         val client = try {
-            TunnelClient(TunnelClient.SERVER_HOST, TunnelClient.SERVER_PORT)
+            val trustManager = resources.openRawResource(R.raw.practice_ca).use { TlsConnector.trustManagerFor(it) }
+            val socket = TlsConnector.connect(trustManager, TlsConnector.SERVER_HOST, TlsConnector.SERVER_PORT)
+            Log.i(TAG, "tls connected: protocol=${socket.session.protocol} cipher=${socket.session.cipherSuite}")
+            TunnelClient(socket)
         } catch (e: IOException) {
-            Log.w(TAG, "cannot open tunnel socket: ${e.message}")
-            stopVpn()
+            // 서버 꺼짐, 인증서 검증 실패(SSLHandshakeException), 호스트 이름 불일치 등. 화면은 "중지됨"으로 돌아간다.
+            Log.w(TAG, "cannot open tunnel: $e")
+            stopIfSession(fd)
+            return@coroutineScope
+        } catch (e: GeneralSecurityException) {
+            // 앱에 넣은 CA 인증서를 읽지 못한 경우
+            Log.w(TAG, "cannot load practice CA: $e")
+            stopIfSession(fd)
+            return@coroutineScope
+        }
+        // 연결과 핸드셰이크에 각각 최대 5초가 걸리고, 핸드셰이크는 읽기마다 5초라 더 걸릴 수도 있다. 그사이 중지 후 다시 시작했다면 tunFd는 새 세션의 fd다.
+        // 늦게 끝난 연결이 새 세션의 tunnel을 덮어쓰지 않게, 이 세션의 fd가 아니면 닫고 끝낸다.
+        if (tunFd !== fd) {
+            client.close()
             return@coroutineScope
         }
         tunnel = client
-        if (tunFd == null) {
-            // 소켓을 만드는 사이에 stopVpn()이 이미 지나갔다. 아무도 닫아 주지 않으니 직접 닫는다.
+        if (tunFd !== fd) {
+            // 위 확인과 이 줄 사이에 stopVpn()이 지나갔다. 아무도 닫아 주지 않으니 직접 닫는다.
             client.close()
             return@coroutineScope
         }
@@ -149,7 +170,7 @@ class PracticeVpnService : VpnService() {
 
     /** TUN에서 읽은 패킷을 로그로 남기고 서버로 보낸다. */
     private fun readLoop(fd: ParcelFileDescriptor, client: TunnelClient) {
-        val buffer = ByteArray(32767)
+        val buffer = ByteArray(PacketFrame.MAX_PACKET_SIZE)
         try {
             FileInputStream(fd.fileDescriptor).use { input ->
                 // read()는 블로킹 호출이라 코루틴 취소로는 깨어나지 않는다.
@@ -160,36 +181,59 @@ class PracticeVpnService : VpnService() {
                     if (length < 0) break
                     if (length == 0) continue
                     logPacket("[to-server]", buffer, length)
-                    // 전송 하나가 실패해도(서버 꺼짐, 권한 없음) 루프는 계속 돈다.
-                    // 여기서 루프를 빠져나가면 fd가 닫혀서 "실행 중"인데 아무것도 안 되는 상태가 된다.
-                    client.tolerate({ Log.w(TAG, "send failed: ${it.message}") }) { send(buffer, length) }
+                    // TCP 스트림은 한 번 실패하면 다시 쓸 수 없다. 전송 실패(IOException)는 견디지 않고 루프를 끝낸다.
+                    client.send(buffer, length)
                 }
             }
         } catch (e: IOException) {
-            Log.i(TAG, "read loop ended: ${e.message}")
+            Log.i(TAG, "read loop ended: $e")
+        } finally {
+            stopIfCurrent(client)
         }
     }
 
     /** 서버가 돌려보낸 패킷을 TUN에 써서 시스템이 응답으로 받게 한다. */
     private fun writeLoop(fd: ParcelFileDescriptor, client: TunnelClient) {
-        val buffer = ByteArray(32767)
+        val buffer = ByteArray(PacketFrame.MAX_PACKET_SIZE)
         // 스트림을 use{}로 닫으면 읽기 루프와 공유하는 fd까지 닫힌다. fd의 수명은 stopVpn()이 관리한다.
         val output = FileOutputStream(fd.fileDescriptor)
         try {
             while (true) {
-                val length = client.tolerate({ Log.w(TAG, "receive failed: ${it.message}") }) { receive(buffer) }
-                    ?: continue
-                if (length == 0) continue
+                val length = client.receive(buffer)
+                if (length < 0) {
+                    Log.i(TAG, "write loop ended: server closed the connection")
+                    break
+                }
                 logPacket("[from-server]", buffer, length)
                 // IPv6처럼 파싱하지 못하는 패킷도 TUN에는 그대로 쓴다. 해석은 시스템 네트워크 스택의 몫이다.
+                // TUN 쓰기 실패 하나(잘못된 패킷 등)는 연결 문제가 아니라서 로그만 남기고 계속한다.
                 output.writePacket(buffer, length, isOpen = { fd.fileDescriptor.valid() }) {
                     Log.w(TAG, "tun write failed: ${it.message}")
                 }
             }
         } catch (e: IOException) {
-            // 소켓이 닫히면(SocketException) 또는 TUN fd가 닫히면 여기로 빠져나온다.
-            Log.i(TAG, "write loop ended: ${e.message}")
+            // 소켓 I/O 실패, 잘못된 프레임(InvalidFrameException), stopVpn()이 소켓을 닫은 경우 여기로 빠져나온다.
+            Log.i(TAG, "write loop ended: $e")
+        } finally {
+            stopIfCurrent(client)
         }
+    }
+
+    /**
+     * 터널이 끊기면 VPN을 멈춘다. TCP 스트림은 끊기면 다시 쓸 수 없고, "실행 중"인데 아무것도 안 되는 상태를 만들지 않기 위해서다.
+     * 자동 재연결은 하지 않는다. 실행 중에 연결을 바꾸는 것은 9단계의 실행 중 상태 전환과 같은 문제라 그때 다룬다.
+     *
+     * client가 아직 현재 터널일 때만 멈춘다. 사용자가 중지 후 바로 다시 시작했을 때, 앞 세션의 늦게 끝난 루프가
+     * 새 세션을 멈추지 않게 하려는 것이다. IO 스레드에서 stopVpn()을 부르면 메인 스레드의 stopVpn()과 겹칠 수 있는데,
+     * 이 기존 경합은 9단계에서 정리한다.
+     */
+    private fun stopIfCurrent(client: TunnelClient) {
+        if (tunnel === client) stopVpn()
+    }
+
+    /** 연결 실패도 같은 이유로, 실패한 연결이 지금 세션(fd)의 것일 때만 VPN을 멈춘다. 앞 세션의 늦은 실패가 새 세션을 멈추지 않게 한다. */
+    private fun stopIfSession(fd: ParcelFileDescriptor) {
+        if (tunFd === fd) stopVpn()
     }
 
     private fun logPacket(direction: String, buffer: ByteArray, length: Int) {
@@ -208,11 +252,26 @@ class PracticeVpnService : VpnService() {
 
     private fun stopVpn() {
         _runningPreset.value = null
-        // fd와 소켓을 먼저 닫아 블로킹 중인 read()/receive()를 깨운 뒤 job을 취소한다. 두 번 호출돼도 null이라 안전하다.
-        tunFd?.close()
+        // 필드를 먼저 비우고 나서 닫는다. 닫으면 루프가 깨어나 stopIfCurrent()를 부르는데,
+        // 그때 tunnel이 아직 남아 있으면 IO 스레드에서 stopVpn()이 한 번 더 돈다.
+        val fd = tunFd
         tunFd = null
-        tunnel?.close()
+        val client = tunnel
         tunnel = null
+        // fd와 소켓을 닫아 블로킹 중인 read()/receive()를 깨운 뒤 job을 취소한다. 두 번 호출돼도 null이라 안전하다.
+        fd?.close()
+        // TLS 소켓의 close()는 close_notify를 네트워크로 보내므로 메인 스레드에서 하면 NetworkOnMainThreadException이 난다.
+        // 그래서 별도 스레드에서 닫는다. 곧 취소될 serviceScope가 아니라 일반 스레드라서 onDestroy() 뒤에도 닫기는 끝까지 실행된다.
+        // 일반 스레드에서 잡히지 않은 예외는 앱을 죽이므로, 닫다가 난 IOException(서버가 먼저 끊음 등)은 로그만 남긴다.
+        if (client != null) {
+            thread(name = "tunnel-close") {
+                try {
+                    client.close()
+                } catch (e: IOException) {
+                    Log.w(TAG, "tunnel close failed: $e")
+                }
+            }
+        }
         tunnelJob?.cancel()
         tunnelJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)

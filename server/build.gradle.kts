@@ -8,6 +8,7 @@ application {
 }
 
 dependencies {
+    implementation(project(":tunnel-protocol"))
     implementation(libs.jna)
     implementation(libs.kotlinx.coroutines.core)
 
