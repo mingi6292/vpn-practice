@@ -18,6 +18,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.GeneralSecurityException
+import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -257,7 +258,18 @@ class PracticeVpnService : VpnService() {
         tunnel = null
         // fd와 소켓을 닫아 블로킹 중인 read()/receive()를 깨운 뒤 job을 취소한다. 두 번 호출돼도 null이라 안전하다.
         fd?.close()
-        client?.close()
+        // TLS 소켓의 close()는 close_notify를 네트워크로 보내므로 메인 스레드에서 하면 NetworkOnMainThreadException이 난다.
+        // 그래서 별도 스레드에서 닫는다. 곧 취소될 serviceScope가 아니라 일반 스레드라서 onDestroy() 뒤에도 닫기는 끝까지 실행된다.
+        // 일반 스레드에서 잡히지 않은 예외는 앱을 죽이므로, 닫다가 난 IOException(서버가 먼저 끊음 등)은 로그만 남긴다.
+        if (client != null) {
+            thread(name = "tunnel-close") {
+                try {
+                    client.close()
+                } catch (e: IOException) {
+                    Log.w(TAG, "tunnel close failed: $e")
+                }
+            }
+        }
         tunnelJob?.cancel()
         tunnelJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
