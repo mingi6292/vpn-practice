@@ -81,7 +81,7 @@ private fun VpnScreen(modifier: Modifier = Modifier) {
     }
 
     // 권한을 거부해도 VPN은 시작한다. 알림 권한이 없으면 알림만 안 보이고,
-    // 로컬 네트워크 권한이 없으면 TUN은 열리지만 서버 전송이 실패해서 Logcat에 "send failed"가 남는다.
+    // 로컬 네트워크 권한이 없으면 서버와의 TCP 연결이 실패해서 VPN이 바로 중지된다(Logcat에 "cannot open tunnel").
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         requestVpnConsent(context, selected) { consentLauncher.launch(it) }
     }
